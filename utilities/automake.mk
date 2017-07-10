@@ -4,13 +4,13 @@ bin_PROGRAMS += \
 	utilities/ofp-discover \
 	utilities/ofp-kill
 bin_SCRIPTS += utilities/ofp-pki
-noinst_SCRIPTS += utilities/ofp-pki-cgi utilities/ofp-parse-leaks
+noinst_PROGRAMS += \
+	utilities/ofp-read
 
 EXTRA_DIST += \
 	utilities/dpctl.8.in \
 	utilities/ofp-discover.8.in \
 	utilities/ofp-kill.8.in \
-	utilities/ofp-parse-leaks.in \
 	utilities/ofp-pki-cgi.in \
 	utilities/ofp-pki.8.in \
 	utilities/ofp-pki.in \
@@ -19,7 +19,6 @@ DISTCLEANFILES += \
 	utilities/dpctl.8 \
 	utilities/ofp-discover.8 \
 	utilities/ofp-kill.8 \
-	utilities/ofp-parse-leaks \
 	utilities/ofp-pki \
 	utilities/ofp-pki.8 \
 	utilities/ofp-pki-cgi \
@@ -43,3 +42,7 @@ utilities_ofp_discover_LDADD = lib/libopenflow.a
 
 utilities_ofp_kill_SOURCES = utilities/ofp-kill.c
 utilities_ofp_kill_LDADD = lib/libopenflow.a
+
+utilities_ofp_read_SOURCES = utilities/ofp-read.c
+utilities_ofp_read_LDADD = lib/libopenflow.a oflib/liboflib.a
+

@@ -159,8 +159,10 @@ dp_new(void) {
     if(strlen(dp->dp_desc) == 0) {
         /* just use "$HOSTNAME pid=$$" */
         char hostnametmp[DESC_STR_LEN];
-	    gethostname(hostnametmp,sizeof hostnametmp);
-        snprintf(dp->dp_desc, sizeof dp->dp_desc,"%s pid=%u",hostnametmp, getpid());
+        char pid[10];
+        gethostname(hostnametmp,sizeof hostnametmp);
+        sprintf(pid, "%u", getpid());
+        snprintf(dp->dp_desc, strlen(hostnametmp) + 5 + strlen(pid),"%s pid=%s",hostnametmp, pid);
     }
 
     /* FIXME: Should not depend on udatapath_as_lib */
@@ -195,7 +197,7 @@ dp_run(struct datapath *dp) {
         pipeline_timeout(dp->pipeline);
     }
 
-    poll_timer_wait(1000);
+    poll_timer_wait(100);
     dp_ports_run(dp);
 
     /* Talk to remotes. */
@@ -249,10 +251,10 @@ remote_run(struct datapath *dp, struct remote *r)
 
 static void
 remote_rconn_run(struct datapath *dp, struct remote *r, uint8_t conn_id) {
-    struct rconn *rconn;
+    struct rconn *rconn = NULL;
     ofl_err error;
     size_t i;
-
+    rconn = NULL;
     if (conn_id == MAIN_CONNECTION)
         rconn = r->rconn;
     else if (conn_id == PTIN_CONNECTION)
@@ -337,6 +339,9 @@ remote_destroy(struct remote *r)
             rconn_destroy(r->rconn_aux);
         }
         rconn_destroy(r->rconn);
+	if(r->mp_req_msg != NULL) {
+	  ofl_msg_free((struct ofl_msg_header *) r->mp_req_msg, NULL);
+	}
         free(r);
     }
 }
@@ -351,6 +356,8 @@ remote_create(struct datapath *dp, struct rconn *rconn, struct rconn *rconn_aux)
     remote->rconn_aux = rconn_aux;
     remote->cb_dump = NULL;
     remote->n_txq = 0;
+    remote->mp_req_msg = NULL;
+    remote->mp_req_xid = 0;  /* Currently not needed. Jean II. */
     remote->role = OFPCR_ROLE_EQUAL;
     /* Set the remote configuration to receive any asynchronous message*/
     for(i = 0; i < 2; i++){
@@ -482,20 +489,20 @@ send_openflow_buffer(struct datapath *dp, struct ofpbuf *buffer,
                             continue;
                         if((p->reason == OFPPR_DELETE) && !(r->config.port_status_mask[0] & 0x2))
                             continue;
-                        if((p->reason == OFPPR_MODIFY) && !(r->config.packet_in_mask[0] & 0x4))
+                        if((p->reason == OFPPR_MODIFY) && !(r->config.port_status_mask[0] & 0x4))
                             continue;
                     }
                     case (OFPT_FLOW_REMOVED):{
                         struct ofp_flow_removed *p= (struct ofp_flow_removed *)buffer->data;
-                        if((p->reason == OFPRR_IDLE_TIMEOUT) && !(r->config.port_status_mask[0] & 0x1))
+                        if((p->reason == OFPRR_IDLE_TIMEOUT) && !(r->config.flow_removed_mask[0] & 0x1))
                             continue;
-                        if((p->reason == OFPRR_HARD_TIMEOUT) && !(r->config.port_status_mask[0] & 0x2))
+                        if((p->reason == OFPRR_HARD_TIMEOUT) && !(r->config.flow_removed_mask[0] & 0x2))
                             continue;
-                        if((p->reason == OFPRR_DELETE) && !(r->config.packet_in_mask[0] & 0x4))
+                        if((p->reason == OFPRR_DELETE) && !(r->config.flow_removed_mask[0] & 0x4))
                             continue;
-                        if((p->reason == OFPRR_GROUP_DELETE) && !(r->config.packet_in_mask[0] & 0x8))
+                        if((p->reason == OFPRR_GROUP_DELETE) && !(r->config.flow_removed_mask[0] & 0x8))
                             continue;
-                        if((p->reason == OFPRR_METER_DELETE) && !(r->config.packet_in_mask[0] & 0x10))
+                        if((p->reason == OFPRR_METER_DELETE) && !(r->config.flow_removed_mask[0] & 0x10))
                             continue;
                     }
                 }
@@ -512,7 +519,7 @@ send_openflow_buffer(struct datapath *dp, struct ofpbuf *buffer,
                         continue;
                     if((p->reason == OFPPR_DELETE) && !(r->config.port_status_mask[1] & 0x2))
                         continue;
-                    if((p->reason == OFPPR_MODIFY) && !(r->config.packet_in_mask[1] & 0x4))
+                    if((p->reason == OFPPR_MODIFY) && !(r->config.port_status_mask[1] & 0x4))
                         continue;
                 }
             }
@@ -586,8 +593,9 @@ dp_handle_set_desc(struct datapath *dp, struct ofl_exp_openflow_msg_set_dp_desc 
 static ofl_err
 dp_check_generation_id(struct datapath *dp, uint64_t new_gen_id){
 
-    if(dp->generation_id >= 0  && ((uint64_t)(dp->generation_id - new_gen_id) < 0) )
+    if(dp->generation_id >= 0  && ((int64_t)(new_gen_id - dp->generation_id) < 0) ){        
         return ofl_error(OFPET_ROLE_REQUEST_FAILED, OFPRRFC_STALE);
+    }
     else dp->generation_id = new_gen_id;
     return 0;
 
@@ -596,10 +604,12 @@ dp_check_generation_id(struct datapath *dp, uint64_t new_gen_id){
 ofl_err
 dp_handle_role_request(struct datapath *dp, struct ofl_msg_role_request *msg,
                                             const struct sender *sender) {
-    uint32_t role = msg->role; 
+    uint32_t role = msg->role;
+    uint64_t generation_id = msg->generation_id; 
     switch (msg->role) {
         case OFPCR_ROLE_NOCHANGE:{
             role = sender->remote->role;
+            generation_id = dp->generation_id;
             break;
         }
         case OFPCR_ROLE_EQUAL: {
@@ -641,7 +651,7 @@ dp_handle_role_request(struct datapath *dp, struct ofl_msg_role_request *msg,
     struct ofl_msg_role_request reply =
         {{.type = OFPT_ROLE_REPLY},
             .role = role,
-            .generation_id = msg->generation_id};
+            .generation_id = generation_id};
 
     dp_send_message(dp, (struct ofl_msg_header *)&reply, sender);
     }

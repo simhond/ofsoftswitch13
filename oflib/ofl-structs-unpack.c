@@ -49,12 +49,12 @@ ofl_err
 ofl_structs_instructions_unpack(struct ofp_instruction *src, size_t *len, struct ofl_instruction_header **dst, struct ofl_exp *exp) {
     size_t ilen;
     struct ofl_instruction_header *inst = NULL;
-
+     
     if (*len < sizeof(struct ofp_instruction)) {
         OFL_LOG_WARN(LOG_MODULE, "Received instruction is too short (%zu).", *len);
         return ofl_error(OFPET_BAD_ACTION, OFPBAC_BAD_LEN);
     }
-
+   
     if (*len < ntohs(src->len)) {
         OFL_LOG_WARN(LOG_MODULE, "Received instruction has invalid length (set to %u, but only %zu received).", ntohs(src->len), *len);
         return ofl_error(OFPET_BAD_ACTION, OFPBAC_BAD_LEN);
@@ -192,6 +192,9 @@ ofl_structs_instructions_unpack(struct ofp_instruction *src, size_t *len, struct
             }
             break;
         }
+        default:
+            OFL_LOG_WARN(LOG_MODULE, "The received instruction type (%d) is invalid.", ntohs(src->type));
+            return ofl_error(OFPET_BAD_INSTRUCTION, OFPBIC_UNKNOWN_INST);
     }
 
     // must set type before check, so free works correctly
@@ -211,7 +214,7 @@ ofl_structs_instructions_unpack(struct ofp_instruction *src, size_t *len, struct
 }
 
 static ofl_err 
-ofl_structs_table_properties_unpack(struct ofp_table_feature_prop_header * src, size_t *len, struct ofl_table_feature_prop_header **dst, struct ofl_exp *exp){
+ofl_structs_table_properties_unpack(struct ofp_table_feature_prop_header * src, size_t *len, struct ofl_table_feature_prop_header **dst, struct ofl_exp *exp UNUSED){
     size_t plen;
     ofl_err error;
     struct ofl_table_feature_prop_header * prop = NULL;
@@ -223,7 +226,7 @@ ofl_structs_table_properties_unpack(struct ofp_table_feature_prop_header * src, 
     
     if (*len < ntohs(src->length)) {
         OFL_LOG_WARN(LOG_MODULE, "Received table property has invalid length (set to %u, but only %zu received).", ntohs(src->length), *len);
-        return ofl_error(OFPET_BAD_ACTION, OFPBAC_BAD_LEN);
+        return ofl_error(OFPET_TABLE_FEATURES_FAILED, OFPTFFC_BAD_LEN);
     }
     plen = ntohs(src->length);
     
@@ -337,7 +340,11 @@ ofl_structs_table_properties_unpack(struct ofp_table_feature_prop_header * src, 
 
 			break;
 		}				
+	default:
+            OFL_LOG_WARN(LOG_MODULE, "The received property contained a unknown property (%u).", ntohs(src->type));
+            return ofl_error(OFPET_TABLE_FEATURES_FAILED, OFPTFFC_BAD_TYPE);
 	}
+
     // must set type before check, so free works correctly
     prop->type = (enum ofp_table_feature_prop_type) ntohs(src->type);
     /* Make sure it can be reused for packing. Jean II */
@@ -491,7 +498,6 @@ ofl_structs_flow_stats_unpack(struct ofp_flow_stats *src, uint8_t *buf, size_t *
         OFL_LOG_WARN(LOG_MODULE, "Received flow stats has invalid length (%zu).", *len);
         return ofl_error(OFPET_BAD_REQUEST, OFPBRC_BAD_LEN);
     }
-
     if (*len < ntohs(src->length)) {
         OFL_LOG_WARN(LOG_MODULE, "Received flow stats reply has invalid length (set to %u, but only %zu received).", ntohs(src->length), *len);
         return ofl_error(OFPET_BAD_REQUEST, OFPBRC_BAD_LEN);
@@ -515,6 +521,7 @@ ofl_structs_flow_stats_unpack(struct ofp_flow_stats *src, uint8_t *buf, size_t *
     s->priority =      ntohs( src->priority);
     s->idle_timeout =  ntohs( src->idle_timeout);
     s->hard_timeout =  ntohs( src->hard_timeout);
+    s->flags        =  ntohs( src->flags);
     s->cookie =        ntoh64(src->cookie);
     s->packet_count =  ntoh64(src->packet_count);
     s->byte_count =    ntoh64(src->byte_count);
@@ -1146,7 +1153,8 @@ ofl_structs_oxm_match_unpack(struct ofp_match* src, uint8_t* buf, size_t *len, s
      }
     else {
 		 m->header.length = 0;
-		 m->header.type = ntohs(src->type);	
+		 m->header.type = ntohs(src->type);
+         m->match_fields = (struct hmap) HMAP_INITIALIZER(&m->match_fields);	
 	}
     ofpbuf_delete(b);    
     *dst = m;
@@ -1158,9 +1166,7 @@ ofl_structs_match_unpack(struct ofp_match *src,uint8_t * buf, size_t *len, struc
 
     switch (ntohs(src->type)) {
         case (OFPMT_OXM): {
-
-             return ofl_structs_oxm_match_unpack(src, buf, len, (struct ofl_match**) dst );       
-            
+             return ofl_structs_oxm_match_unpack(src, buf, len, (struct ofl_match**) dst );               
         }
         default: {
             if (exp == NULL || exp->match == NULL || exp->match->unpack == NULL) {

@@ -110,12 +110,71 @@ oxm_init(void)
     }
 }
 
+bool 
+check_bad_wildcard(uint8_t value, uint8_t mask){
+    uint8_t masked = value & mask;
+    if (value == masked){
+        return false;
+    }
+    else {
+        return true;
+    }
+}
+
+bool 
+check_bad_wildcard16(uint16_t value, uint16_t mask){
+    uint16_t masked = value & mask;
+    if (value == masked){
+        return false;
+    }
+    else {
+        return true;
+    }
+}
+
+bool 
+check_bad_wildcard32(uint32_t value, uint32_t mask){
+    uint32_t masked = value & mask;
+    if (value == masked){
+        return false;
+    }
+    else {
+        return true;
+    }
+}
+
+bool 
+check_bad_wildcard48(uint8_t *value, uint8_t *mask){
+    return (check_bad_wildcard16(*((uint16_t *) value), *((uint16_t *) mask)) ||  
+    check_bad_wildcard32(*((uint32_t *) (value + 2)), 
+                        *((uint32_t *) (mask + 2))));
+}
+
+bool 
+check_bad_wildcard64(uint64_t value, uint64_t mask){
+    uint64_t masked = value & mask;
+    if (value == masked){
+        return false;
+    }
+    else {
+        return true;
+    }
+}
+
+bool 
+check_bad_wildcard128(uint8_t *value, uint8_t *mask){
+    return (check_bad_wildcard64(*((uint64_t *) value), *((uint64_t *) mask)) ||  
+    check_bad_wildcard64(*((uint64_t *) (value + 8)), 
+                        *((uint64_t *) (mask + 8)))); 
+}
+
+
 struct oxm_field *
 oxm_field_lookup(uint32_t header)
 {
     struct oxm_field *f;
-
     oxm_init();
+      
     HMAP_FOR_EACH_WITH_HASH(f, struct oxm_field, hmap_node, hash_int(header, 0),
                             &all_oxm_fields) {
         if (f->header == header) {
@@ -159,13 +218,13 @@ oxm_prereqs_ok(const struct oxm_field *field, const struct ofl_match *rule)
 {
 
     struct ofl_match_tlv *omt = NULL;
-
+    bool found =  false;
     /*Check ICMP type*/
     if (field->header == OXM_OF_IPV6_ND_SLL || field->header == OXM_OF_IPV6_ND_TARGET ){
-        bool found =  false;
+        
         HMAP_FOR_EACH_WITH_HASH (omt, struct ofl_match_tlv, hmap_node, hash_int(OXM_OF_ICMPV6_TYPE, 0),
               &rule->match_fields) {
-            if (*omt->value != ICMPV6_NEIGHSOL){
+            if (*(omt)->value != ICMPV6_NEIGHSOL){
                 return false;
             }
             found = true;
@@ -174,8 +233,7 @@ oxm_prereqs_ok(const struct oxm_field *field, const struct ofl_match *rule)
             return false;
     }
     /*Check ICMP type*/
-    if (field->header == OXM_OF_IPV6_ND_TLL || field->header == OXM_OF_IPV6_ND_TARGET){
-        bool found =  false;
+    if ((field->header == OXM_OF_IPV6_ND_TLL || field->header == OXM_OF_IPV6_ND_TARGET) && !found){
         HMAP_FOR_EACH_WITH_HASH (omt, struct ofl_match_tlv, hmap_node, hash_int(OXM_OF_ICMPV6_TYPE, 0),
               &rule->match_fields) {
             if (*omt->value != ICMPV6_NEIGHADV){
@@ -189,7 +247,7 @@ oxm_prereqs_ok(const struct oxm_field *field, const struct ofl_match *rule)
 
     /*Check for IP_PROTO */
     if (field->nw_proto){
-        bool found =  false;
+        found =  false;
         HMAP_FOR_EACH_WITH_HASH (omt, struct ofl_match_tlv, hmap_node, hash_int(OXM_OF_IP_PROTO, 0),
             &rule->match_fields) {
             uint8_t ip_proto;
@@ -247,7 +305,6 @@ static uint8_t* get_oxm_value(struct ofl_match *m, uint32_t header){
 static int
 parse_oxm_entry(struct ofl_match *match, const struct oxm_field *f,
                 const void *value, const void *mask){
-
     switch (f->index) {
         case OFI_OXM_OF_IN_PORT: {
             uint32_t* in_port = (uint32_t*) value;
@@ -266,6 +323,9 @@ parse_oxm_entry(struct ofl_match *match, const struct oxm_field *f,
             return 0;
         }
         case OFI_OXM_OF_METADATA_W:{
+            if (check_bad_wildcard64(ntoh64(*((uint64_t*) value)), ntoh64(*((uint64_t*) mask)))){
+                return ofp_mkerr(OFPET_BAD_MATCH, OFPBMC_BAD_WILDCARDS);
+            }
             ofl_structs_match_put64m(match, f->header, ntoh64(*((uint64_t*) value)), ntoh64(*((uint64_t*) mask)));
             return 0;
         }
@@ -277,6 +337,9 @@ parse_oxm_entry(struct ofl_match *match, const struct oxm_field *f,
         }
         case OFI_OXM_OF_ETH_DST_W:
         case OFI_OXM_OF_ETH_SRC_W:{
+            if (check_bad_wildcard48((uint8_t* )value, (uint8_t* )mask)){
+                return ofp_mkerr(OFPET_BAD_MATCH, OFPBMC_BAD_WILDCARDS);
+            }
             ofl_structs_match_put_eth_m(match, f->header,(uint8_t* )value, (uint8_t* )mask );
             return 0;
         }
@@ -299,6 +362,10 @@ parse_oxm_entry(struct ofl_match *match, const struct oxm_field *f,
         case OFI_OXM_OF_VLAN_VID_W:{
             uint16_t* vlan_id = (uint16_t*) value;
             uint16_t* vlan_mask = (uint16_t*) mask;
+
+            if (check_bad_wildcard16(ntohs(*vlan_id), ntohs(*vlan_mask))){
+                return ofp_mkerr(OFPET_BAD_MATCH, OFPBMC_BAD_WILDCARDS);
+            }
 
             if (ntohs(*vlan_id) > OFPVID_PRESENT+VLAN_VID_MAX)
                 return ofp_mkerr(OFPET_BAD_MATCH, OFPBMC_BAD_VALUE);
@@ -342,25 +409,33 @@ parse_oxm_entry(struct ofl_match *match, const struct oxm_field *f,
         case OFI_OXM_OF_IPV4_SRC:
         case OFI_OXM_OF_IPV4_DST:
         case OFI_OXM_OF_ARP_TPA:
-        case OFI_OXM_OF_ARP_SPA:
+        case OFI_OXM_OF_ARP_SPA:{
              ofl_structs_match_put32(match, f->header, *((uint32_t*) value));
              return 0;
+        }
         case OFI_OXM_OF_IPV4_DST_W:
         case OFI_OXM_OF_IPV4_SRC_W:
         case OFI_OXM_OF_ARP_SPA_W:
-        case OFI_OXM_OF_ARP_TPA_W:
-             ofl_structs_match_put32m(match, f->header, *((uint32_t*) value), *((uint32_t*) mask));
-             return 0;
+        case OFI_OXM_OF_ARP_TPA_W:{
+            if (check_bad_wildcard32(*((uint32_t*) value), *((uint32_t*) mask))){
+                return ofp_mkerr(OFPET_BAD_MATCH, OFPBMC_BAD_WILDCARDS);
+            }
+            ofl_structs_match_put32m(match, f->header, *((uint32_t*) value), *((uint32_t*) mask));
+            return 0;
+        }
         case OFI_OXM_OF_ARP_SHA:
         case OFI_OXM_OF_ARP_THA:
             ofl_structs_match_put_eth(match, f->header,(uint8_t* )value);
             return 0;
 
         case OFI_OXM_OF_ARP_SHA_W:
-        case OFI_OXM_OF_ARP_THA_W:
+        case OFI_OXM_OF_ARP_THA_W:{
+             if (check_bad_wildcard48((uint8_t* )value, (uint8_t* )mask)){
+                return ofp_mkerr(OFPET_BAD_MATCH, OFPBMC_BAD_WILDCARDS);
+            }
             ofl_structs_match_put_eth_m(match, f->header,(uint8_t* )value, (uint8_t* )mask );
             return 0;
-
+        }
             /* IPv6 addresses. */
         case OFI_OXM_OF_IPV6_SRC:
         case OFI_OXM_OF_IPV6_DST:{
@@ -369,6 +444,9 @@ parse_oxm_entry(struct ofl_match *match, const struct oxm_field *f,
         }
         case OFI_OXM_OF_IPV6_SRC_W:
         case OFI_OXM_OF_IPV6_DST_W:{
+            if (check_bad_wildcard128((uint8_t* ) value,(uint8_t* ) mask)){
+                return ofp_mkerr(OFPET_BAD_MATCH, OFPBMC_BAD_WILDCARDS);
+            }
             ofl_structs_match_put_ipv6m(match, f->header,(uint8_t* ) value,(uint8_t* ) mask);
             return 0;
         }
@@ -377,6 +455,9 @@ parse_oxm_entry(struct ofl_match *match, const struct oxm_field *f,
             return 0;
         }
         case OFI_OXM_OF_IPV6_FLABEL_W:{
+            if (check_bad_wildcard32(*((uint32_t*) value), *((uint32_t*) mask))){
+                return ofp_mkerr(OFPET_BAD_MATCH, OFPBMC_BAD_WILDCARDS);
+            }
             ofl_structs_match_put32m(match, f->header, ntohl(*((uint32_t*) value)), ntohl(*((uint32_t*) mask)));
             return 0;
         }
@@ -388,24 +469,25 @@ parse_oxm_entry(struct ofl_match *match, const struct oxm_field *f,
         case OFI_OXM_OF_UDP_DST:
             /* SCTP header. */
         case OFI_OXM_OF_SCTP_SRC:
-        case OFI_OXM_OF_SCTP_DST:
-                ofl_structs_match_put16(match, f->header, ntohs(*((uint16_t*) value)));
-                return 0;
-
+        case OFI_OXM_OF_SCTP_DST:{
+            ofl_structs_match_put16(match, f->header, ntohs(*((uint16_t*) value)));
+            return 0;
+        }
             /* ICMP header. */
         case OFI_OXM_OF_ICMPV4_TYPE:
         case OFI_OXM_OF_ICMPV4_CODE:
             /* ICMPv6 header. */
         case OFI_OXM_OF_ICMPV6_TYPE:
         case OFI_OXM_OF_ICMPV6_CODE:{
-                uint8_t *v = (uint8_t*) value;
-                ofl_structs_match_put8(match, f->header, *v);
+            uint8_t *v = (uint8_t*) value;
+            ofl_structs_match_put8(match, f->header, *v);
                 return 0;
         }
             /* IPv6 Neighbor Discovery. */
-        case OFI_OXM_OF_IPV6_ND_TARGET:
-            ofl_structs_match_put_ipv6(match, f->header,(uint8_t* ) value);
+        case OFI_OXM_OF_IPV6_ND_TARGET:{
+            ofl_structs_match_put_ipv6(match, f->header,(uint8_t* ) value);            
             return 0;
+        }
         case OFI_OXM_OF_IPV6_ND_SLL:
         case OFI_OXM_OF_IPV6_ND_TLL:
             ofl_structs_match_put_eth(match, f->header,(uint8_t* )value);
@@ -428,18 +510,32 @@ parse_oxm_entry(struct ofl_match *match, const struct oxm_field *f,
              ofl_structs_match_put8(match, f->header, *v);
              return 0;
         }
-        case OFI_OXM_OF_PBB_ISID:
-             ofl_structs_match_put32(match, f->header, ntohl(*((uint32_t*) value)));
-             return 0;
-        case OFI_OXM_OF_PBB_ISID_W:
-             ofl_structs_match_put32m(match, f->header, ntohl(*((uint32_t*) value)), ntohl(*((uint32_t*) mask)));
-             return 0;
+        case OFI_OXM_OF_PBB_ISID:{
+            uint8_t* pbb_isid;
+            pbb_isid = (uint8_t*) value;                    
+            ofl_structs_match_put_pbb_isid(match, f->header, pbb_isid);
+            return 0;
+        }
+        case OFI_OXM_OF_PBB_ISID_W:{
+            uint8_t* pbb_isid;
+            uint8_t* pbb_isid_mask;
+            pbb_isid = (uint8_t*) value;
+            pbb_isid_mask = (uint8_t*) mask;
+            if (check_bad_wildcard32(*((uint32_t*) value), *((uint32_t*) mask))){
+                return ofp_mkerr(OFPET_BAD_MATCH, OFPBMC_BAD_WILDCARDS);
+            }            
+            ofl_structs_match_put_pbb_isidm(match, f->header, pbb_isid, (uint8_t*) &pbb_isid_mask);
+            return 0;
+        }
         case OFI_OXM_OF_TUNNEL_ID:{
-            ofl_structs_match_put64(match, f->header, *((uint64_t*) value));
+            ofl_structs_match_put64(match, f->header, ntoh64(*((uint64_t*) value)));
             return 0;
         }
         case OFI_OXM_OF_TUNNEL_ID_W:{
-            ofl_structs_match_put64m(match, f->header,*((uint64_t*) value),*((uint64_t*) mask));
+            if (check_bad_wildcard64(*((uint64_t*) value), *((uint64_t*) mask))){
+                return ofp_mkerr(OFPET_BAD_MATCH, OFPBMC_BAD_WILDCARDS);
+            }
+            ofl_structs_match_put64m(match, f->header,ntoh64(*((uint64_t*) value)),ntoh64(*((uint64_t*) mask)));
             return 0;
         }
         case OFI_OXM_OF_IPV6_EXTHDR:
@@ -472,7 +568,7 @@ oxm_pull_match(struct ofpbuf *buf, struct ofl_match * match_dst, int match_len)
     if (!p) {
         VLOG_DBG_RL(LOG_MODULE,&rl, "oxm_match length %u, rounded up to a "
                     "multiple of 8, is longer than space in message (max "
-                    "length %d)", match_len, buf->size);
+                    "length %zu)", match_len, buf->size);
 
         return ofp_mkerr(OFPET_BAD_MATCH, OFPBRC_BAD_LEN);
     }
@@ -486,7 +582,6 @@ oxm_pull_match(struct ofpbuf *buf, struct ofl_match * match_dst, int match_len)
         const struct oxm_field *f;
         int error;
         f = oxm_field_lookup(header);
-
         if (!f) {
             error = ofp_mkerr(OFPET_BAD_MATCH, OFPBMC_BAD_FIELD);
         }
@@ -629,6 +724,24 @@ oxm_put_64w(struct ofpbuf *buf, uint32_t header, uint64_t value, uint64_t mask)
 }
 
 static void
+oxm_put_pbb(struct ofpbuf *buf, uint32_t header,
+            const uint8_t value[PBB_ISID_LEN])
+{
+    oxm_put_header(buf, header);
+    ofpbuf_put(buf, value, PBB_ISID_LEN);
+
+}
+
+static void
+oxm_put_pbbm(struct ofpbuf *buf, uint32_t header,
+            const uint8_t value[PBB_ISID_LEN], const uint8_t mask[PBB_ISID_LEN])
+{
+    oxm_put_header(buf, header);
+    ofpbuf_put(buf, value, PBB_ISID_LEN);
+    ofpbuf_put(buf, mask, PBB_ISID_LEN);
+}
+
+static void
 oxm_put_eth(struct ofpbuf *buf, uint32_t header,
             const uint8_t value[ETH_ADDR_LEN])
 {
@@ -686,7 +799,8 @@ oxm_put_eth_dst(struct ofpbuf *b,
 static bool
 is_requisite(uint32_t header){
     if(header == OXM_OF_IN_PORT || header == OXM_OF_ETH_TYPE
-        || header == OXM_OF_VLAN_VID || header == OXM_OF_IP_PROTO) {
+        || header == OXM_OF_VLAN_VID || header == OXM_OF_IP_PROTO ||
+        header == OXM_OF_ICMPV6_TYPE) {
         return true;
     }
     return false;
@@ -735,6 +849,13 @@ int oxm_put_match(struct ofpbuf *buf, struct ofl_match *omt){
          oxm_put_8(buf,oft->header, value);
     }
 
+    HMAP_FOR_EACH_WITH_HASH(oft, struct ofl_match_tlv, hmap_node, hash_int(OXM_OF_ICMPV6_TYPE, 0),
+          &omt->match_fields) {
+         uint8_t value;
+         memcpy(&value, oft->value,sizeof(uint8_t));
+         oxm_put_8(buf,oft->header, value);
+    }
+
     /* Loop through the remaining fields */
     HMAP_FOR_EACH(oft, struct ofl_match_tlv, hmap_node, &omt->match_fields){
 
@@ -773,6 +894,20 @@ int oxm_put_match(struct ofpbuf *buf, struct ofl_match *omt){
                     }
                     break;
                 }
+                case (PBB_ISID_LEN):{
+                    {
+                     uint8_t value[PBB_ISID_LEN];
+                     memcpy(&value, oft->value, PBB_ISID_LEN);
+                     if(!has_mask)
+                         oxm_put_pbb(buf,oft->header, value);
+                     else {
+                         uint8_t mask[PBB_ISID_LEN];
+                         memcpy(&mask, oft->value + length ,PBB_ISID_LEN);
+                         oxm_put_pbbm(buf, oft->header,value, mask);
+                      }
+                      break;
+                   }
+                } 
                 case (sizeof(uint32_t)):{
                     uint32_t value;
                     memcpy(&value, oft->value,sizeof(uint32_t));

@@ -188,7 +188,7 @@ action_set_write_actions(struct action_set *set,
     for (i=0; i<actions_num; i++) {
         action_set_write_action(set, actions[i]);
     }
-    VLOG_DBG_RL(LOG_MODULE, &rl, action_set_to_string(set));
+    VLOG_DBG_RL(LOG_MODULE, &rl, "%s", action_set_to_string(set));
 }
 
 void
@@ -211,6 +211,11 @@ action_set_execute(struct action_set *set, struct packet *pkt, uint64_t cookie) 
         dp_execute_action(pkt, entry->action);
         list_remove(&entry->node);
         free(entry);
+    }
+
+    /* Clear the action set in any case. Group processing depend on
+     * a clean action-set. Jean II */
+    action_set_clear_actions(pkt->action_set);
 
         /* According to the spec. if there was a group action, the output
          * port action should be ignored */
@@ -218,7 +223,7 @@ action_set_execute(struct action_set *set, struct packet *pkt, uint64_t cookie) 
             uint32_t group_id = pkt->out_group;
             pkt->out_group = OFPG_ANY;
 
-            action_set_clear_actions(pkt->action_set);
+            /* Transfer packet to the group. It will be destroyed. Jean II */
             group_table_execute(pkt->dp->groups, pkt, group_id);
 
             return;
@@ -230,11 +235,13 @@ action_set_execute(struct action_set *set, struct packet *pkt, uint64_t cookie) 
             pkt->out_port_max_len = 0;
             pkt->out_queue = 0;
 
-            action_set_clear_actions(pkt->action_set);
             dp_actions_output_port(pkt, port_id, queue_id, max_len, cookie);
+            packet_destroy(pkt);
             return;
         }
-    }
+
+    /* No output or group action. Just drop the packet. Jean II */
+    packet_destroy(pkt);
 }
 
 char *

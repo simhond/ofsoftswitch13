@@ -2,7 +2,16 @@
 
 This is an [OpenFlow 1.3][ofp13] compatible user-space software switch implementation. The code is based on the [Ericsson TrafficLab 1.1 softswitch
 implementation][ericssonsw11], with changes in the forwarding plane to support
-OpenFlow 1.3.
+OpenFlow 1.3. 
+
+**UPDATE**: A new experimental branch with contributions from the [BEBA EU Project][beba-eu] is available with lots of performance improvements and OpenFlow extensions. If you want to try the code checkout to the BEBA-EU branch.
+
+    ```
+    $ git checkout remotes/origin/BEBA-EU
+    ```   
+
+**Important notice:**  Despite the fact the switch is still popular for adventurers trying to implement own changes to OpenFlow, support  now is on a best-effort base. Currently, there are lots of complaints about performance degradation, broken features and installation problems. Although not confirmed, most of the problems seem to be due to most recent linux versions. As the main contributor of the switch, I would like to keep the project alive and fix all the recurrent issues. However, life moves and new projects come, resulting in no time to work on it. I am still happy to help anyone who comes asking for advice on how to make changes in the code, but I cannot guarantee quick and active replies.  
+ *-Eder*
 
 The following components are available in this package:
 * `ofdatapath`: the switch implementation
@@ -12,7 +21,7 @@ The following components are available in this package:
 
 # Getting Started
 
-These instructions have been tested on Ubuntu 12.04. Other distributions or versions may need different steps.
+These instructions have been tested on Ubuntu 16.04. Other distributions or versions may need different steps. 
 
 ## Before building
 The switch makes use of the NetBee library to parse packets, so we need to install it first.
@@ -20,44 +29,38 @@ The switch makes use of the NetBee library to parse packets, so we need to insta
 1. Install the following packages:
 
     ```
-    $ sudo apt-get install cmake libpcap-dev libxerces-c2-dev libpcre3-dev flex bison
+    $ sudo apt-get install cmake libpcap-dev libxerces-c3.1 libxerces-c-dev libpcre3 libpcre3-dev flex bison pkg-config autoconf libtool libboost-dev
     ```
 
-2. Download and unpack the source code from: http://www.nbee.org/download/nbeesrc-12-05-16.php
-
-3. Create the build system
+2. Clone and build netbee
 
     ```
-    $ cd nbeesrc/src
+    $ git clone https://github.com/netgroup-polito/netbee.git
+    $ cd netbee/src
     $ cmake .
-    ```
-
-4. Compile
-
-    ```
     $ make
     ```
 
-5. Add the shared libraries built in `/nbeesrc/bin/` to your `/usr/local/lib` directory
+3. Add the shared libraries built in `/nbeesrc/bin/` to your `/usr/local/lib` directory
 
     ```
     $ sudo cp ../bin/libn*.so /usr/local/lib
     ```
 
-6. Run `ldconfig`
+4. Run `ldconfig`
 
     ```
     $ sudo ldconfig
     ```
 
-7. Put the folder `nbeesrc/include` in the `/usr/include`
+5. Put the contens of folder `nbeesrc/include` in the `/usr/include`
 
     ```
-    $ sudo cp -R ../include /usr/include
+    $ sudo cp -R ../include/* /usr/include/
     ```
 
 ## Building
-Run the following commands in the `of13softswitch` directory to build and install everything:
+Run the following commands in the `ofsoftswitch13` directory to build and install everything:
 
     $ ./boot.sh
     $ ./configure
@@ -126,8 +129,8 @@ code from the original Stanford switch).
 
 # Acknowledgments
 
-This project is supported by Ericsson Innovation Center in Brazil.
-Maintained by CPqD in technical collaboration with Ericsson Research.
+This project was supported by Ericsson Innovation Center in Brazil.
+Formerly maintained by CPqD in technical collaboration with Ericsson Research.
 
 **Contributions:**
 
@@ -151,7 +154,9 @@ Hiroyasu OHYAMA, correct URL of NetBee Library.
 *know if we forgot to add your name to the list of contributors!*
 
 # Contact
-E-mail: Eder Leao Fernandes (ederlf@cpqd.com.br)
+E-mail: Eder Leao Fernandes (ederleaofernandes at gmail . com)
 
 [ofp13]: https://www.opennetworking.org/images/stories/downloads/specification/openflow-spec-v1.3.0.pdf
 [ericssonsw11]: https://github.com/TrafficLab/of11softswitch
+[compileubuntu14]: http://tocai.dia.uniroma3.it/compunet-wiki/index.php/Installing_and_setting_up_OpenFlow_tools
+[beba-eu]: http://www.beba-project.eu/ 

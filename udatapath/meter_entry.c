@@ -30,6 +30,7 @@
  */
 
 #include <stdbool.h>
+#include "csum.h"
 #include "flow_entry.h"
 #include "meter_entry.h"
 #include "meter_table.h"
@@ -141,7 +142,7 @@ meter_entry_create(struct datapath *dp, struct meter_table *table, struct ofl_ms
 void
 meter_entry_update(struct meter_entry *entry) {
     entry->stats->duration_sec  =  (time_msec() - entry->created) / 1000;
-    entry->stats->duration_nsec = ((time_msec() - entry->created) % 1000) * 1000;
+    entry->stats->duration_nsec = ((time_msec() - entry->created) % 1000) * 1000000;
 }
 
 void
@@ -166,7 +167,7 @@ static bool
 consume_tokens(struct ofl_meter_band_stats *band, uint16_t meter_flag, struct packet *pkt){
 
     if(meter_flag & OFPMF_KBPS){
-        uint32_t pkt_size = (pkt->buffer->size*8)/1024;
+        uint32_t pkt_size = pkt->buffer->size * 8;
         if (band->tokens >= pkt_size) {
             band->tokens -= pkt_size;
             return true;
@@ -195,7 +196,6 @@ choose_band(struct meter_entry *entry, struct packet *pkt)
 	for(i = 0; i < entry->stats->meter_bands_num; i++)
 	{
 		struct ofl_meter_band_header *band_header = entry->config->bands[i];
-	
 		if(!consume_tokens(entry->stats->band_stats[i], entry->config->flags, pkt) && band_header->rate > tmp_rate)
 		{
 			tmp_rate = band_header->rate;
@@ -205,8 +205,7 @@ choose_band(struct meter_entry *entry, struct packet *pkt)
 	return band_index;
 }
 
-/// type - conversion
-// Not handle burst size
+
 void
 meter_entry_apply(struct meter_entry *entry, struct packet **pkt){
 	
@@ -218,34 +217,65 @@ meter_entry_apply(struct meter_entry *entry, struct packet **pkt){
 
 	b = choose_band(entry, *pkt);
 	if(b != -1){
-		struct ofl_meter_band_header *band_header = (struct ofl_meter_band_header*)  entry->config->bands[b];
-		switch(band_header->type){
-			case OFPMBT_DROP:{
+        struct ofl_meter_band_header *band_header = (struct ofl_meter_band_header*)  entry->config->bands[b];
+        switch(band_header->type){
+            case OFPMBT_DROP:{
                 drop = true;
-				break;
-			}
-			case OFPMBT_DSCP_REMARK:{
-				struct ofl_meter_band_dscp_remark *band_header = (struct ofl_meter_band_dscp_remark *)  entry->config->bands[b];
-				// descrease dscp in ipv4 header
-				uint8_t new_dscp = ((*pkt)->handle_std->proto->ipv4->ip_tos >> 5) - band_header->prec_level;
-				(*pkt)->handle_std->proto->ipv4->ip_tos = (new_dscp << 5) | ((*pkt)->handle_std->proto->ipv4->ip_tos & 0x1f);
-				break;
-			}
-			case OFPMBT_EXPERIMENTER:{
-				break;
-			}
+                break;
+            }
+            case OFPMBT_DSCP_REMARK:{
+            	packet_handle_std_validate((*pkt)->handle_std);
+    		if ((*pkt)->handle_std->valid)
+    		{
+                struct ofl_meter_band_dscp_remark *band_header = (struct ofl_meter_band_dscp_remark *)  entry->config->bands[b];
+                /* Nothing prevent this band to be used for non-IP packets, so filter them out. Jean II */
+                if ((*pkt)->handle_std->proto->ipv4 != NULL) {
+                    // Fetch dscp in ipv4 header
+                    struct ip_header *ipv4 = (*pkt)->handle_std->proto->ipv4;
+                    uint8_t old_drop = ipv4->ip_tos & 0x1C;
+                    /* The spec says that we need to increase
+                                       the drop precedence of the packet.
+                                       We need a valid DSCP out of the process,
+                                       so we can only modify dscp if the
+                                       drop precedence is low (tos 0x***010**)
+                                       or medium (tos 0x***100**). Jean II */
+                    if (((old_drop == 0x8) && (band_header->prec_level <= 2)) || ((old_drop == 0x10) && (band_header->prec_level <= 1))) {
+                        uint8_t new_drop = old_drop + (band_header->prec_level << 3);
+                        uint8_t new_tos = new_drop | (ipv4->ip_tos & 0xE3);
+                        uint16_t old_val = htons((ipv4->ip_ihl_ver << 8) + ipv4->ip_tos);
+                        uint16_t new_val = htons((ipv4->ip_ihl_ver << 8) + new_tos);
+                        ipv4->ip_csum = recalc_csum16(ipv4->ip_csum, old_val, new_val);
+                        ipv4->ip_tos = new_tos;
+                    }
+                }
+                else if ((*pkt)->handle_std->proto->ipv6 != NULL){
+                    struct ipv6_header *ipv6 = (*pkt)->handle_std->proto->ipv6;
+                    uint32_t ipv6_ver_tc_fl = ntohl(ipv6->ipv6_ver_tc_fl);
+                    uint32_t old_drop = ipv6_ver_tc_fl & 0x1C00000;
+                    if (((old_drop == 0x800000) && (band_header->prec_level <= 2)) || ((old_drop == 0x1000000) && (band_header->prec_level <= 1))){
+                        uint32_t prec_level = band_header->prec_level << 23;
+                        uint32_t new_drop = old_drop + prec_level;
+                        ipv6->ipv6_ver_tc_fl = htonl(new_drop | (ipv6_ver_tc_fl & 0xFE3FFFFF));
+                    }
+                }
+                (*pkt)->handle_std->valid = false;
 		}
-		entry->stats->band_stats[b]->byte_band_count += (*pkt)->buffer->size;
-		entry->stats->band_stats[b]->packet_band_count++;
-        if (drop){
-            VLOG_ERR_RL(LOG_MODULE, &rl, "Dropping packet: rate %d", band_header->rate);
-			packet_destroy(*pkt);
-			*pkt = NULL;
+                break;
+            }
+            case OFPMBT_EXPERIMENTER:{
+                break;
+            }
         }
-	}
+        entry->stats->band_stats[b]->byte_band_count += (*pkt)->buffer->size;
+        entry->stats->band_stats[b]->packet_band_count++;
+        if (drop){
+            VLOG_DBG_RL(LOG_MODULE, &rl, "Dropping packet: rate %d", band_header->rate);
+            packet_destroy(*pkt);
+            *pkt = NULL;
+        }
+    }
 
 }
-
 
 /* Returns true if the meter entry has  reference to the flow entry. */
 static bool
@@ -288,38 +318,35 @@ meter_entry_del_flow_ref(struct meter_entry *entry, struct flow_entry *fe) {
 void
 refill_bucket(struct meter_entry *entry)
 {
-	size_t i;
+    long long int now = time_msec();
+    size_t i;
 
     for(i = 0; i < entry->config->meter_bands_num; i++) {
-    	long long int now = time_msec();
-        long long int tokens = !(entry->config->flags & OFPMF_PKTPS) ? 
-                        (now - entry->stats->band_stats[i]->last_fill) * 
-    						entry->config->bands[i]->rate  + entry->stats->band_stats[i]->tokens
-                            : (now - entry->stats->band_stats[i]->last_fill) * 
-                            (entry->config->bands[i]->rate * 1000) + entry->stats->band_stats[i]->tokens;
-
+        uint32_t rate;
+        uint32_t burst_size;
+        uint64_t tokens;
+        long long int elapsed_msec = now - entry->stats->band_stats[i]->last_fill;
+        rate = entry->config->bands[i]->rate * 1000;
+        burst_size = entry->config->bands[i]->burst_size * 1000;
+        tokens = ((rate * elapsed_msec) / 1000) + entry->stats->band_stats[i]->tokens;
+        entry->stats->band_stats[i]->last_fill = now;
         if (!(entry->config->flags & OFPMF_BURST)){
             if(entry->config->flags & OFPMF_KBPS && tokens >= 1){
-        		  entry->stats->band_stats[i]->tokens = MIN(tokens, entry->config->bands[i]->rate);
-                  entry->stats->band_stats[i]->last_fill = now;
-
+		        entry->stats->band_stats[i]->tokens = MIN(tokens, rate);
             }
             else{
                 if(tokens >= 1000) {
-                    entry->stats->band_stats[i]->tokens = MIN(tokens, entry->config->bands[i]->rate * 1000);
-                            entry->stats->band_stats[i]->last_fill = now;
-
+                    entry->stats->band_stats[i]->tokens = MIN(tokens, rate);
                 }
             }
         }
         else {
-            if(entry->config->flags & OFPMF_KBPS && tokens >= 1 ) {
-                    entry->stats->band_stats[i]->tokens = MIN(tokens, entry->config->bands[i]->burst_size);  
-            
+            if(entry->config->flags & OFPMF_KBPS && tokens >= 1 ){
+                    entry->stats->band_stats[i]->tokens = MIN(tokens,burst_size);
             }
             else {
                 if(tokens >= 1000) {
-                    entry->stats->band_stats[i]->tokens = MIN(tokens, entry->config->bands[i]->burst_size * 1000);
+                    entry->stats->band_stats[i]->tokens = MIN(tokens,burst_size);
                 }
             }
         }
